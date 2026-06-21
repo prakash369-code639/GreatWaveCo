@@ -1,0 +1,520 @@
+//@version=6
+strategy("Great Wave Co",
+     overlay=true,
+     max_labels_count=500,
+     pyramiding=0,
+     process_orders_on_close=true)
+
+//====================================================
+// INPUTS
+//====================================================
+
+// Daily Ichimoku
+tenkanLen    = input.int(9,  "Daily Tenkan Length")
+kijunLen     = input.int(26, "Daily Kijun Length")
+senkouBLen   = input.int(52, "Daily Senkou B Length")
+displacement = input.int(26, "Daily Displacement")
+
+// EMA lengths
+emaFastLen = input.int(9,  "EMA Fast")
+emaSlowLen = input.int(20, "EMA Slow")
+
+// MACD for Daily cancel logic
+macdFastLen = input.int(12, "MACD Fast")
+macdSlowLen = input.int(26, "MACD Slow")
+
+// VWAP settings
+vwapBandMult = input.float(1.0, "VWAP Band Multiplier", step=0.1)
+
+// Plot toggles
+showDailyCloud      = input.bool(true,  "Show Daily Ichimoku Cloud")
+showDailyEMAs       = input.bool(true,  "Show Daily EMA 9 / 20")
+showHourlyMarkers   = input.bool(true,  "Show Hourly Arm Markers")
+showTradeBuyLabel   = input.bool(true,  "Show TRADE BUY Label")
+showTradeSellLabel  = input.bool(true,  "Show TRADE SELL Label")
+showTradeExitLabel  = input.bool(true,  "Show TRADE EXIT Label")
+showDailyBuyLabel   = input.bool(true,  "Show Daily BUY Label")
+showDailySellLabel  = input.bool(true,  "Show Daily SELL Label")
+showDailyCancelLbl  = input.bool(true,  "Show Daily BUY/SELL CANCEL Labels")
+showVwapBands       = input.bool(true,  "Show 6m VWAP Bands")
+
+//====================================================
+// TIMEFRAMES
+//====================================================
+tfDaily = "D"
+tfHour  = "60"
+
+//====================================================
+// 1) DAILY REGIME LOGIC
+//====================================================
+
+//----------------------
+// Daily OHLC
+//----------------------
+dClose = request.security(syminfo.tickerid, tfDaily, close, barmerge.gaps_off, barmerge.lookahead_off)
+dLow   = request.security(syminfo.tickerid, tfDaily, low,   barmerge.gaps_off, barmerge.lookahead_off)
+dHigh  = request.security(syminfo.tickerid, tfDaily, high,  barmerge.gaps_off, barmerge.lookahead_off)
+
+//----------------------
+// Daily Ichimoku raw spans for plotting
+//----------------------
+dSenkouA_raw = request.security(
+     syminfo.tickerid, tfDaily,
+     (((ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2) +
+      ((ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2)) / 2,
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dSenkouB_raw = request.security(
+     syminfo.tickerid, tfDaily,
+     (ta.highest(high, senkouBLen) + ta.lowest(low, senkouBLen)) / 2,
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// Visible cloud aligned to current Daily candle
+dKumoA = request.security(
+     syminfo.tickerid, tfDaily,
+     ((((ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2) +
+       ((ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2)) / 2)[displacement],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dKumoB = request.security(
+     syminfo.tickerid, tfDaily,
+     ((ta.highest(high, senkouBLen) + ta.lowest(low, senkouBLen)) / 2)[displacement],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dUpperCloud = math.max(dKumoA, dKumoB)
+dLowerCloud = math.min(dKumoA, dKumoB)
+
+//----------------------
+// Daily EMA + MACD
+//----------------------
+dEma9 = request.security(
+     syminfo.tickerid, tfDaily,
+     ta.ema(close, emaFastLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dEma20 = request.security(
+     syminfo.tickerid, tfDaily,
+     ta.ema(close, emaSlowLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dMacdLine = request.security(
+     syminfo.tickerid, tfDaily,
+     ta.ema(close, macdFastLen) - ta.ema(close, macdSlowLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+//----------------------
+// Daily conditions
+//----------------------
+// BUY side
+dCurrAboveCloud = dClose > dUpperCloud and dLow > dUpperCloud
+dPrevAboveCloud = dClose[1] > dUpperCloud[1] and dLow[1] > dUpperCloud[1]
+
+// SELL side
+dCurrBelowCloud = dClose < dLowerCloud and dHigh < dLowerCloud
+dPrevBelowCloud = dClose[1] < dLowerCloud[1] and dHigh[1] < dLowerCloud[1]
+
+// Daily BUY conditions
+dailyFreshBuy          = dCurrAboveCloud and not dPrevAboveCloud
+dailyEmaBullCross      = ta.crossover(dEma9, dEma20)
+dailyEmaBearCross      = ta.crossunder(dEma9, dEma20)
+dailyReBuy             = dailyEmaBullCross and dCurrAboveCloud
+dailyMacdZeroCrossDown = ta.crossunder(dMacdLine, 0)
+
+// Daily SELL conditions
+dailyFreshSell        = dCurrBelowCloud and not dPrevBelowCloud
+dailyReSell           = dailyEmaBearCross and dCurrBelowCloud
+dailyMacdZeroCrossUp  = ta.crossover(dMacdLine, 0)
+
+//----------------------
+// Confirm daily events only once on lower timeframe chart
+//----------------------
+newDay = ta.change(time(tfDaily)) != 0
+
+confirmedDailyFreshBuy          = newDay and dailyFreshBuy[1]
+confirmedDailyReBuy             = newDay and dailyReBuy[1]
+confirmedDailyEmaBearCross      = newDay and dailyEmaBearCross[1]
+confirmedDailyEmaBullCross      = newDay and dailyEmaBullCross[1]
+confirmedDailyMacdZeroCrossDown = newDay and dailyMacdZeroCrossDown[1]
+
+confirmedDailyFreshSell       = newDay and dailyFreshSell[1]
+confirmedDailyReSell          = newDay and dailyReSell[1]
+confirmedDailyMacdZeroCrossUp = newDay and dailyMacdZeroCrossUp[1]
+
+//----------------------
+// Daily regime state
+//----------------------
+var bool dailyInBuy = false
+var bool dailyInSell = false
+
+var bool dailyBuyWasCancelled = false
+var bool dailySellWasCancelled = false
+
+var bool dailyBuyCancelWatch = false
+var bool dailySellCancelWatch = false
+
+dailyBuySignal     = false
+dailySellSignal    = false
+dailyBuyCancelSig  = false
+dailySellCancelSig = false
+
+//================ BUY DAILY REGIME ================
+
+// Fresh BUY
+if confirmedDailyFreshBuy and not dailyInBuy
+    dailyBuySignal := true
+    dailyInBuy := true
+    dailyBuyWasCancelled := false
+    dailyBuyCancelWatch := false
+
+    // mutually exclusive regime
+    dailyInSell := false
+    dailySellCancelWatch := false
+
+// Start BUY cancel watch after daily EMA bearish cross
+if confirmedDailyEmaBearCross and dailyInBuy
+    dailyBuyCancelWatch := true
+
+// Reset BUY cancel watch if EMA turns bullish again before MACD < 0
+if confirmedDailyEmaBullCross and dailyInBuy and dailyBuyCancelWatch
+    dailyBuyCancelWatch := false
+
+// BUY cancel
+if dailyInBuy and dailyBuyCancelWatch and confirmedDailyMacdZeroCrossDown
+    dailyBuyCancelSig := true
+    dailyInBuy := false
+    dailyBuyWasCancelled := true
+    dailyBuyCancelWatch := false
+
+// Re-BUY after cancel
+if confirmedDailyReBuy and not dailyInBuy and dailyBuyWasCancelled
+    dailyBuySignal := true
+    dailyInBuy := true
+    dailyBuyWasCancelled := false
+    dailyBuyCancelWatch := false
+
+    // mutually exclusive regime
+    dailyInSell := false
+    dailySellCancelWatch := false
+
+//================ SELL DAILY REGIME ================
+
+// Fresh SELL
+if confirmedDailyFreshSell and not dailyInSell
+    dailySellSignal := true
+    dailyInSell := true
+    dailySellWasCancelled := false
+    dailySellCancelWatch := false
+
+    // mutually exclusive regime
+    dailyInBuy := false
+    dailyBuyCancelWatch := false
+
+// Start SELL cancel watch after daily EMA bullish cross
+if confirmedDailyEmaBullCross and dailyInSell
+    dailySellCancelWatch := true
+
+// Reset SELL cancel watch if EMA turns bearish again before MACD > 0
+if confirmedDailyEmaBearCross and dailyInSell and dailySellCancelWatch
+    dailySellCancelWatch := false
+
+// SELL cancel
+if dailyInSell and dailySellCancelWatch and confirmedDailyMacdZeroCrossUp
+    dailySellCancelSig := true
+    dailyInSell := false
+    dailySellWasCancelled := true
+    dailySellCancelWatch := false
+
+// Re-SELL after cancel
+if confirmedDailyReSell and not dailyInSell and dailySellWasCancelled
+    dailySellSignal := true
+    dailyInSell := true
+    dailySellWasCancelled := false
+    dailySellCancelWatch := false
+
+    // mutually exclusive regime
+    dailyInBuy := false
+    dailyBuyCancelWatch := false
+
+//====================================================
+// 2) HOURLY ARMING LOGIC
+//====================================================
+
+// Hourly EMA values
+hEma9 = request.security(
+     syminfo.tickerid, tfHour,
+     ta.ema(close, emaFastLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+hEma20 = request.security(
+     syminfo.tickerid, tfHour,
+     ta.ema(close, emaSlowLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+hourlyBullCross = ta.crossover(hEma9, hEma20)
+hourlyBearCross = ta.crossunder(hEma9, hEma20)
+
+// Confirm once on first bar of next hourly candle
+newHour = ta.change(time(tfHour)) != 0
+confirmedHourlyBullCross = newHour and hourlyBullCross[1]
+confirmedHourlyBearCross = newHour and hourlyBearCross[1]
+
+// Hourly arm states
+var bool hourlyArmedBuy  = false
+var bool hourlyArmedSell = false
+
+hourlyBuyArmSignal  = false
+hourlySellArmSignal = false
+
+//====================================================
+// 3) 6-MIN EXECUTION LOGIC
+//====================================================
+
+// Session VWAP clone using HLC3 + standard deviation
+isNewSession = ta.change(time("D")) != 0
+
+var float cumVol = na
+var float cumPV  = na
+var float cumPV2 = na
+
+price = hlc3
+
+cumVol := isNewSession ? volume : nz(cumVol[1]) + volume
+cumPV  := isNewSession ? price * volume : nz(cumPV[1]) + price * volume
+cumPV2 := isNewSession ? volume * price * price : nz(cumPV2[1]) + volume * price * price
+
+vwap = cumPV / cumVol
+variance = math.max(cumPV2 / cumVol - vwap * vwap, 0)
+stdev = math.sqrt(variance)
+
+vwapUpper = vwap + stdev * vwapBandMult
+vwapLower = vwap - stdev * vwapBandMult
+
+// 6m EMA triggers
+ema6m_9  = ta.ema(close, emaFastLen)
+ema6m_20 = ta.ema(close, emaSlowLen)
+
+ema6mBullCross = ta.crossover(ema6m_9, ema6m_20)
+ema6mBearCross = ta.crossunder(ema6m_9, ema6m_20)
+
+// Pullback / bounce conditions
+belowVwapBand = low > 0 and low < vwapLower
+aboveVwapBand = high > vwapUpper
+
+// Execution state
+var bool pullbackSeenBuy  = false
+var bool pullbackSeenSell = false
+
+tradeBuySignal  = false
+tradeSellSignal = false
+tradeExitSignal = false
+
+//====================================================
+// 4) STATE FLOW
+//====================================================
+
+//----------------------
+// Invalidate buy chain if Daily BUY is gone
+//----------------------
+if not dailyInBuy
+    hourlyArmedBuy := false
+    pullbackSeenBuy := false
+
+// Arm BUY setup when hourly bullish crossover happens while daily BUY is active
+if dailyInBuy and confirmedHourlyBullCross
+    hourlyArmedBuy := true
+    hourlyBuyArmSignal := true
+    pullbackSeenBuy := false
+
+// Invalidate BUY arm if hourly bearish crossover happens
+if confirmedHourlyBearCross
+    hourlyArmedBuy := false
+    pullbackSeenBuy := false
+
+// Once BUY hourly arm is active, watch for 6m pullback below lower VWAP band
+if dailyInBuy and hourlyArmedBuy and belowVwapBand
+    pullbackSeenBuy := true
+
+//----------------------
+// Invalidate sell chain if Daily SELL is gone
+//----------------------
+if not dailyInSell
+    hourlyArmedSell := false
+    pullbackSeenSell := false
+
+// Arm SELL setup when hourly bearish crossover happens while daily SELL is active
+if dailyInSell and confirmedHourlyBearCross
+    hourlyArmedSell := true
+    hourlySellArmSignal := true
+    pullbackSeenSell := false
+
+// Invalidate SELL arm if hourly bullish crossover happens
+if confirmedHourlyBullCross
+    hourlyArmedSell := false
+    pullbackSeenSell := false
+
+// Once SELL hourly arm is active, watch for 6m bounce above upper VWAP band
+if dailyInSell and hourlyArmedSell and aboveVwapBand
+    pullbackSeenSell := true
+
+//====================================================
+// 5) ENTRY LOGIC - OPTION 1 REPEATED SIGNALS
+//====================================================
+
+// BUY entries/signals
+if dailyInBuy and hourlyArmedBuy and pullbackSeenBuy and ema6mBullCross
+    tradeBuySignal := true
+
+    // actual strategy long only if not already long
+    if strategy.position_size <= 0
+        strategy.entry("Long", strategy.long)
+
+    // allow repeated BUY signals under same hourly arm
+    pullbackSeenBuy := false
+
+// SELL entries/signals
+if dailyInSell and hourlyArmedSell and pullbackSeenSell and ema6mBearCross
+    tradeSellSignal := true
+
+    // actual strategy short only if not already short
+    if strategy.position_size >= 0
+        strategy.entry("Short", strategy.short)
+
+    // allow repeated SELL signals under same hourly arm
+    pullbackSeenSell := false
+
+//====================================================
+// 6) EXIT LOGIC
+//====================================================
+
+// Long exit = Hourly bearish OR Daily BUY cancel
+exitLongByHourly = strategy.position_size > 0 and confirmedHourlyBearCross
+exitLongByDaily  = strategy.position_size > 0 and dailyBuyCancelSig
+
+if exitLongByHourly or exitLongByDaily
+    tradeExitSignal := true
+    strategy.close("Long")
+
+// Short exit = Hourly bullish OR Daily SELL cancel
+exitShortByHourly = strategy.position_size < 0 and confirmedHourlyBullCross
+exitShortByDaily  = strategy.position_size < 0 and dailySellCancelSig
+
+if exitShortByHourly or exitShortByDaily
+    tradeExitSignal := true
+    strategy.close("Short")
+
+//====================================================
+// PLOTS
+//====================================================
+
+// Daily cloud
+//plotA = plot(showDailyCloud ? dSenkouA_raw : na, "Daily Senkou A", color=color.green, linewidth=1, offset=displacement)
+//plotB = plot(showDailyCloud ? dSenkouB_raw : na, "Daily Senkou B", color=color.maroon, linewidth=1, offset=displacement)
+//fill(plotA, plotB,
+  //   color=dSenkouA_raw > dSenkouB_raw ? color.new(color.green, 85) : color.new(color.red, 85),
+//     title="Daily Kumo")
+
+// Daily EMAs
+//plot(showDailyEMAs ? dEma9 : na,  "Daily EMA 9",  color=color.aqua,   linewidth=2)
+//plot(showDailyEMAs ? dEma20 : na, "Daily EMA 20", color=color.orange, linewidth=2)
+
+// 6m VWAP bands
+plot(showVwapBands ? vwap : na,      "6m Session VWAP",    color=color.yellow, linewidth=2)
+plot(showVwapBands ? vwapUpper : na, "6m VWAP Upper Band", color=color.new(color.green, 0))
+plot(showVwapBands ? vwapLower : na, "6m VWAP Lower Band", color=color.new(color.red, 0))
+
+//====================================================
+// LABELS
+//====================================================
+plotshape(dailyBuySignal and showDailyBuyLabel,
+     title="Daily BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.green,
+     text="D BUY",
+     textcolor=color.white,
+     size=size.small)
+
+plotshape(dailySellSignal and showDailySellLabel,
+     title="Daily SELL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     text="D SELL",
+     textcolor=color.white,
+     size=size.small)
+
+plotshape(dailyBuyCancelSig and showDailyCancelLbl,
+     title="Daily BUY CANCEL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     text="D CANCEL",
+     textcolor=color.white,
+     size=size.small)
+
+plotshape(dailySellCancelSig and showDailyCancelLbl,
+     title="Daily SELL CANCEL",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.green,
+     text="D CANCEL",
+     textcolor=color.white,
+     size=size.small)
+
+plotshape(hourlyBuyArmSignal and showHourlyMarkers,
+     title="Hourly BUY Armed",
+     style=shape.circle,
+     location=location.bottom,
+     color=color.orange,
+     size=size.tiny,
+     text="HB")
+
+plotshape(hourlySellArmSignal and showHourlyMarkers,
+     title="Hourly SELL Armed",
+     style=shape.circle,
+     location=location.top,
+     color=color.purple,
+     size=size.tiny,
+     text="HS")
+
+plotshape(tradeBuySignal and showTradeBuyLabel,
+     title="TRADE BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.lime,
+     text="TRADE BUY",
+     textcolor=color.black,
+     size=size.normal)
+
+plotshape(tradeSellSignal and showTradeSellLabel,
+     title="TRADE SELL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     text="TRADE SELL",
+     textcolor=color.white,
+     size=size.normal)
+
+plotshape(tradeExitSignal and showTradeExitLabel,
+     title="TRADE EXIT",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.fuchsia,
+     text="EXIT",
+     textcolor=color.white,
+     size=size.normal)
+
+//====================================================
+// ALERTS
+//====================================================
+alertcondition(dailyBuySignal,     title="Daily BUY",         message="Daily BUY regime active")
+alertcondition(dailySellSignal,    title="Daily SELL",        message="Daily SELL regime active")
+alertcondition(dailyBuyCancelSig,  title="Daily BUY CANCEL",  message="Daily BUY regime cancelled")
+alertcondition(dailySellCancelSig, title="Daily SELL CANCEL", message="Daily SELL regime cancelled")
+
+alertcondition(hourlyBuyArmSignal,  title="Hourly BUY Armed",  message="Hourly EMA bull crossover while Daily BUY is active")
+alertcondition(hourlySellArmSignal, title="Hourly SELL Armed", message="Hourly EMA bear crossover while Daily SELL is active")
+
+alertcondition(tradeBuySignal,  title="TRADE BUY",  message="6m VWAP lower-band bounce + EMA bull crossover BUY")
+alertcondition(tradeSellSignal, title="TRADE SELL", message="6m VWAP upper-band bounce + EMA bear crossover SELL")
+alertcondition(tradeExitSignal, title="TRADE EXIT", message="Trade exited by hourly crossover or daily cancel")

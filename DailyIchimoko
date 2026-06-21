@@ -1,0 +1,229 @@
+//@version=6
+indicator("Daily Ichimoku Buy + Re-Buy + Buy Cancel (EMA + MACD Zero Cross)", overlay=true, max_labels_count=500)
+
+//====================================================
+// Inputs
+//====================================================
+tenkanLen     = input.int(9,  "Tenkan Length")
+kijunLen      = input.int(26, "Kijun Length")
+senkouBLen    = input.int(52, "Senkou B Length")
+displacement  = input.int(26, "Displacement")
+
+emaFastLen    = input.int(9,  "EMA Fast")
+emaSlowLen    = input.int(20, "EMA Slow")
+
+macdFastLen   = input.int(12, "MACD Fast")
+macdSlowLen   = input.int(26, "MACD Slow")
+macdSignalLen = input.int(9,  "MACD Signal") // kept for future use if needed
+
+showCloud      = input.bool(true,  "Show Daily Ichimoku Cloud")
+showEMAs       = input.bool(true,  "Show Daily EMA 9 / 20")
+showBuyLbl     = input.bool(true,  "Show BUY Label")
+showCancelLbl  = input.bool(true,  "Show BUY CANCEL Label")
+
+tf = "D"
+
+//====================================================
+// DAILY PRICE SERIES
+//====================================================
+dOpen  = request.security(syminfo.tickerid, tf, open,  barmerge.gaps_off, barmerge.lookahead_off)
+dHigh  = request.security(syminfo.tickerid, tf, high,  barmerge.gaps_off, barmerge.lookahead_off)
+dLow   = request.security(syminfo.tickerid, tf, low,   barmerge.gaps_off, barmerge.lookahead_off)
+dClose = request.security(syminfo.tickerid, tf, close, barmerge.gaps_off, barmerge.lookahead_off)
+
+//====================================================
+// DAILY ICHIMOKU
+//====================================================
+dTenkan = request.security(
+     syminfo.tickerid, tf,
+     (ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2,
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dKijun = request.security(
+     syminfo.tickerid, tf,
+     (ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2,
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dSenkouA_raw = request.security(
+     syminfo.tickerid, tf,
+     (((ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2) +
+      ((ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2)) / 2,
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dSenkouB_raw = request.security(
+     syminfo.tickerid, tf,
+     (ta.highest(high, senkouBLen) + ta.lowest(low, senkouBLen)) / 2,
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+// Visible cloud aligned to current Daily candle
+// This matches the cloud visually sitting on the current candle
+dKumoA = request.security(
+     syminfo.tickerid, tf,
+     ((((ta.highest(high, tenkanLen) + ta.lowest(low, tenkanLen)) / 2) +
+       ((ta.highest(high, kijunLen) + ta.lowest(low, kijunLen)) / 2)) / 2)[displacement],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dKumoB = request.security(
+     syminfo.tickerid, tf,
+     ((ta.highest(high, senkouBLen) + ta.lowest(low, senkouBLen)) / 2)[displacement],
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dUpperCloud = math.max(dKumoA, dKumoB)
+dLowerCloud = math.min(dKumoA, dKumoB)
+
+//====================================================
+// DAILY EMA
+//====================================================
+dEma9 = request.security(
+     syminfo.tickerid, tf,
+     ta.ema(close, emaFastLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+dEma20 = request.security(
+     syminfo.tickerid, tf,
+     ta.ema(close, emaSlowLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+//====================================================
+// DAILY MACD LINE
+//====================================================
+dMacdLine = request.security(
+     syminfo.tickerid, tf,
+     ta.ema(close, macdFastLen) - ta.ema(close, macdSlowLen),
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+//====================================================
+// DAILY CONDITIONS
+//====================================================
+
+// Candle fully above cloud
+currAboveCloud = dClose > dUpperCloud and dLow > dUpperCloud
+prevAboveCloud = dClose[1] > dUpperCloud[1] and dLow[1] > dUpperCloud[1]
+
+// Fresh BUY = first candle fully above cloud
+dailyFreshBuy = currAboveCloud and not prevAboveCloud
+
+// EMA cross conditions
+dailyEmaBullCross = ta.crossover(dEma9, dEma20)
+dailyEmaBearCross = ta.crossunder(dEma9, dEma20)
+
+// Re-BUY after cancel, only if candle still above cloud
+dailyReBuy = dailyEmaBullCross and currAboveCloud
+
+// Actual MACD zero-line crossunder
+dailyMacdZeroCrossDown = ta.crossunder(dMacdLine, 0)
+
+//====================================================
+// NEW DAY DETECTION
+// On lower timeframe charts, print only once on the first bar of the next day
+//====================================================
+newDay = ta.change(time(tf)) != 0
+isDailyChart = timeframe.isdaily
+
+confirmedFreshBuy          = newDay and dailyFreshBuy[1]
+confirmedReBuy             = newDay and dailyReBuy[1]
+confirmedEmaBearCross      = newDay and dailyEmaBearCross[1]
+confirmedEmaBullCross      = newDay and dailyEmaBullCross[1]
+confirmedMacdZeroCrossDown = newDay and dailyMacdZeroCrossDown[1]
+
+finalFreshBuy          = isDailyChart ? dailyFreshBuy           : confirmedFreshBuy
+finalReBuy             = isDailyChart ? dailyReBuy              : confirmedReBuy
+finalEmaBearCross      = isDailyChart ? dailyEmaBearCross       : confirmedEmaBearCross
+finalEmaBullCross      = isDailyChart ? dailyEmaBullCross       : confirmedEmaBullCross
+finalMacdZeroCrossDown = isDailyChart ? dailyMacdZeroCrossDown  : confirmedMacdZeroCrossDown
+
+//====================================================
+// STATE MANAGEMENT
+//====================================================
+var bool inBuy = false
+var bool wasCancelled = false
+var bool cancelWatch = false
+
+buySignal = false
+buyCancelSignal = false
+
+//----------------------------------------------------
+// 1) Fresh BUY
+//----------------------------------------------------
+if finalFreshBuy and not inBuy
+    buySignal := true
+    inBuy := true
+    wasCancelled := false
+    cancelWatch := false
+
+//----------------------------------------------------
+// 2) Start cancel watch after EMA bearish crossover
+//----------------------------------------------------
+if finalEmaBearCross and inBuy
+    cancelWatch := true
+
+//----------------------------------------------------
+// 3) RESET cancel watch if EMA turns bullish again
+// BEFORE MACD crosses below zero
+//----------------------------------------------------
+if finalEmaBullCross and inBuy and cancelWatch
+    cancelWatch := false
+
+//----------------------------------------------------
+// 4) BUY CANCEL only when MACD crosses below zero
+// after bearish EMA crossover watch is active
+//----------------------------------------------------
+if inBuy and cancelWatch and finalMacdZeroCrossDown
+    buyCancelSignal := true
+    inBuy := false
+    wasCancelled := true
+    cancelWatch := false
+
+//----------------------------------------------------
+// 5) RE-BUY after cancel
+//----------------------------------------------------
+if finalReBuy and not inBuy and wasCancelled
+    buySignal := true
+    inBuy := true
+    wasCancelled := false
+    cancelWatch := false
+
+//====================================================
+// PLOTS
+//====================================================
+plotTenkan = plot(showCloud ? dTenkan : na, "Daily Tenkan", color=color.blue, linewidth=1)
+plotKijun  = plot(showCloud ? dKijun  : na, "Daily Kijun",  color=color.red, linewidth=1)
+
+plotA = plot(showCloud ? dSenkouA_raw : na, "Daily Senkou A", color=color.green, linewidth=1, offset=displacement)
+plotB = plot(showCloud ? dSenkouB_raw : na, "Daily Senkou B", color=color.maroon, linewidth=1, offset=displacement)
+
+fill(plotA, plotB,
+     color = dSenkouA_raw > dSenkouB_raw ? color.new(color.green, 85) : color.new(color.red, 85),
+     title="Daily Kumo")
+
+plot(showEMAs ? dEma9  : na, "Daily EMA 9",  color=color.aqua,   linewidth=2)
+plot(showEMAs ? dEma20 : na, "Daily EMA 20", color=color.orange, linewidth=2)
+
+//====================================================
+// SIGNAL LABELS
+//====================================================
+plotshape(
+     buySignal and showBuyLbl,
+     title="BUY",
+     style=shape.labelup,
+     location=location.belowbar,
+     color=color.green,
+     textcolor=color.white,
+     text="BUY",
+     size=size.small)
+
+plotshape(
+     buyCancelSignal and showCancelLbl,
+     title="BUY CANCEL",
+     style=shape.labeldown,
+     location=location.abovebar,
+     color=color.red,
+     textcolor=color.white,
+     text="BUY CANCEL",
+     size=size.small)
+
+//====================================================
+// ALERTS
+//====================================================
+alertcondition(buySignal, title="Daily BUY", message="BUY: Fresh Ichimoku breakout or EMA re-entry above cloud")
+alertcondition(buyCancelSignal, title="Daily BUY CANCEL", message="BUY CANCEL: EMA bearish crossover followed by MACD zero-line crossunder")

@@ -9,3 +9,7 @@ Reverse Trade logic added.
 GreatWave 5.5
 
 It allows one contra trade when hourly invalidates. Also script converted to indicator.
+
+GeeatWave 5.7
+
+Minor Improvement in Reverse Logic.

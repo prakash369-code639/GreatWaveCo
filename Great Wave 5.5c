@@ -1,0 +1,830 @@
+//@version=6
+indicator("Great Wave v5.5c Indicator", overlay=true, max_labels_count=500)
+
+//=====================================================================
+// INPUTS
+//=====================================================================
+groupDaily  = "Daily Regime"
+groupExec   = "6m Execution"
+groupVWAP   = "VWAP Bands"
+groupDisp   = "Display"
+groupRev    = "Reverse Carry"
+groupDiv    = "Reverse Divergence"
+
+emaFastLen = input.int(9,  "EMA Fast", minval=1, group=groupExec)
+emaSlowLen = input.int(20, "EMA Slow", minval=1, group=groupExec)
+
+macdFast   = input.int(12, "MACD Fast", group=groupDaily)
+macdSlow   = input.int(26, "MACD Slow", group=groupDaily)
+macdSignal = input.int(9,  "MACD Signal", group=groupDaily)
+
+showDailyCloud = input.bool(true, "Plot Daily Kumo Lines", group=groupDisp)
+showVWAPBands  = input.bool(true, "Plot VWAP Bands", group=groupDisp)
+showReverseCarryLabels = input.bool(true, "Show Reverse Carry Labels", group=groupRev)
+
+convLen  = input.int(9,  "Tenkan", group=groupDaily)
+baseLen  = input.int(26, "Kijun",  group=groupDaily)
+spanBLen = input.int(52, "Span B", group=groupDaily)
+
+band1Mult = input.float(1.0, "VWAP Band 1 Mult", step=0.1, group=groupVWAP)
+band2Mult = input.float(2.0, "VWAP Band 2 Mult", step=0.1, group=groupVWAP)
+
+revSmaFastLen = input.int(21,  "Reverse Carry SMA Fast", minval=1, group=groupRev)
+revSmaSlowLen = input.int(200, "Reverse Carry SMA Slow", minval=2, group=groupRev)
+
+rsiLen = input.int(14, "RSI Length", minval=2, group=groupDiv)
+pivotLeft  = input.int(2, "Pivot Left", minval=1, group=groupDiv)
+pivotRight = input.int(2, "Pivot Right", minval=1, group=groupDiv)
+buyDivRsiMax  = input.int(35, "BUY DIV: L1 RSI Max", minval=1, maxval=100, group=groupDiv)
+sellDivRsiMin = input.int(65, "SELL DIV: H1 RSI Min", minval=1, maxval=100, group=groupDiv)
+
+// v5.5c MACD confirmation inputs
+useMacdConfirmForDiv = input.bool(true, "Use MACD Confirmation for DIV", group=groupDiv)
+macdConfirmMode = input.string("Light", "MACD Confirm Mode", options=["Light", "Strong"], group=groupDiv)
+
+//=====================================================================
+// HELPER
+//=====================================================================
+f_label(_cond, _price, _txt, _style, _bg, _tc) =>
+    if _cond
+        label.new(bar_index, _price, _txt, style=_style, color=_bg, textcolor=_tc, size=size.small)
+
+//=====================================================================
+// 6m INDICATORS
+//=====================================================================
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+bullCross6 = ta.crossover(emaFast, emaSlow)
+bearCross6 = ta.crossunder(emaFast, emaSlow)
+
+rsi = ta.rsi(close, rsiLen)
+
+// 6m MACD histogram for DIV confirmation
+macdLine6   = ta.ema(close, macdFast) - ta.ema(close, macdSlow)
+macdSignal6 = ta.ema(macdLine6, macdSignal)
+macdHist6   = macdLine6 - macdSignal6
+
+macdBuyConfirm =
+     not useMacdConfirmForDiv ? true :
+     macdConfirmMode == "Light" ? macdHist6 > macdHist6[1] :
+     macdHist6 > macdHist6[1] and macdHist6[1] > macdHist6[2]
+
+macdSellConfirm =
+     not useMacdConfirmForDiv ? true :
+     macdConfirmMode == "Light" ? macdHist6 < macdHist6[1] :
+     macdHist6 < macdHist6[1] and macdHist6[1] < macdHist6[2]
+
+// Reverse carry SMA filter
+revSmaFast = ta.sma(close, revSmaFastLen)
+revSmaSlow = ta.sma(close, revSmaSlowLen)
+revBullCross = ta.crossover(revSmaFast, revSmaSlow)   // kill HB X reverse SELL carry
+revBearCross = ta.crossunder(revSmaFast, revSmaSlow)  // kill HS X reverse BUY carry
+
+//=====================================================================
+// EVENT GATES
+//=====================================================================
+newDay  = ta.change(time("D"))  != 0
+newHour = ta.change(time("60")) != 0
+
+//=====================================================================
+// DAILY DATA
+//=====================================================================
+dClose = request.security(syminfo.tickerid, "D", close)
+dHigh  = request.security(syminfo.tickerid, "D", high)
+dLow   = request.security(syminfo.tickerid, "D", low)
+
+dEmaFast = request.security(syminfo.tickerid, "D", ta.ema(close, emaFastLen))
+dEmaSlow = request.security(syminfo.tickerid, "D", ta.ema(close, emaSlowLen))
+dMacdLine = request.security(syminfo.tickerid, "D", ta.ema(close, macdFast) - ta.ema(close, macdSlow))
+
+dBullCross = request.security(syminfo.tickerid, "D", ta.crossover(ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)))
+dBearCross = request.security(syminfo.tickerid, "D", ta.crossunder(ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)))
+
+// Daily Ichimoku
+dTenkan = request.security(syminfo.tickerid, "D", (ta.highest(high, convLen) + ta.lowest(low, convLen)) / 2.0)
+dKijun  = request.security(syminfo.tickerid, "D", (ta.highest(high, baseLen) + ta.lowest(low, baseLen)) / 2.0)
+dSpanA  = (dTenkan + dKijun) / 2.0
+dSpanB  = request.security(syminfo.tickerid, "D", (ta.highest(high, spanBLen) + ta.lowest(low, spanBLen)) / 2.0)
+
+dCloudUpper = math.max(dSpanA, dSpanB)
+dCloudLower = math.min(dSpanA, dSpanB)
+dCloudMid   = (dCloudUpper + dCloudLower) / 2.0
+
+strongBuyDaily  = dClose > dCloudUpper and dLow > dCloudUpper
+strongSellDaily = dClose < dCloudLower and dHigh < dCloudLower
+
+contBuyDaily =
+     dEmaFast > dEmaSlow and
+     dMacdLine > 0 and
+     dClose > dCloudMid and
+     dSpanA > dSpanB and
+     dClose > dKijun
+
+contSellDaily =
+     dEmaFast < dEmaSlow and
+     dMacdLine < 0 and
+     dClose < dCloudMid and
+     dSpanA < dSpanB and
+     dClose < dKijun
+
+//=====================================================================
+// DAILY REGIME STATE
+//=====================================================================
+var bool dailyInBuy  = false
+var bool dailyInSell = false
+
+var bool dailyBuyCancelWatch  = false
+var bool dailySellCancelWatch = false
+
+dailyStrongBuyEvent  = false
+dailyContBuyEvent    = false
+dailyStrongSellEvent = false
+dailyContSellEvent   = false
+dailyBuyCancelEvent  = false
+dailySellCancelEvent = false
+
+dailyStrongBuyEvent  := false
+dailyContBuyEvent    := false
+dailyStrongSellEvent := false
+dailyContSellEvent   := false
+dailyBuyCancelEvent  := false
+dailySellCancelEvent := false
+
+if newDay
+    if not dailyInBuy and not dailyInSell
+        if strongBuyDaily
+            dailyInBuy := true
+            dailyInSell := false
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyStrongBuyEvent := true
+        else if contBuyDaily
+            dailyInBuy := true
+            dailyInSell := false
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyContBuyEvent := true
+        else if strongSellDaily
+            dailyInSell := true
+            dailyInBuy := false
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyStrongSellEvent := true
+        else if contSellDaily
+            dailyInSell := true
+            dailyInBuy := false
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyContSellEvent := true
+    else if dailyInBuy
+        if strongSellDaily
+            dailyInBuy := false
+            dailyInSell := true
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyStrongSellEvent := true
+        else if contSellDaily
+            dailyInBuy := false
+            dailyInSell := true
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyContSellEvent := true
+    else if dailyInSell
+        if strongBuyDaily
+            dailyInSell := false
+            dailyInBuy := true
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyStrongBuyEvent := true
+        else if contBuyDaily
+            dailyInSell := false
+            dailyInBuy := true
+            dailyBuyCancelWatch := false
+            dailySellCancelWatch := false
+            dailyContBuyEvent := true
+
+if newDay
+    if dailyInBuy and dBearCross
+        dailyBuyCancelWatch := true
+    if dailyInBuy and dailyBuyCancelWatch and dBullCross
+        dailyBuyCancelWatch := false
+    if dailyInBuy and dailyBuyCancelWatch and dMacdLine < 0
+        dailyInBuy := false
+        dailyBuyCancelWatch := false
+        dailyBuyCancelEvent := true
+
+    if dailyInSell and dBullCross
+        dailySellCancelWatch := true
+    if dailyInSell and dailySellCancelWatch and dBearCross
+        dailySellCancelWatch := false
+    if dailyInSell and dailySellCancelWatch and dMacdLine > 0
+        dailyInSell := false
+        dailySellCancelWatch := false
+        dailySellCancelEvent := true
+
+//=====================================================================
+// HOURLY DATA
+//=====================================================================
+hClose = request.security(syminfo.tickerid, "60", close)
+hEmaFast = request.security(syminfo.tickerid, "60", ta.ema(close, emaFastLen))
+hEmaSlow = request.security(syminfo.tickerid, "60", ta.ema(close, emaSlowLen))
+
+hBullCross = request.security(syminfo.tickerid, "60", ta.crossover(ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)))
+hBearCross = request.security(syminfo.tickerid, "60", ta.crossunder(ta.ema(close, emaFastLen), ta.ema(close, emaSlowLen)))
+
+hEmaSlowPrev = request.security(syminfo.tickerid, "60", ta.ema(close, emaSlowLen)[1])
+hSlopeUp   = hEmaSlow > hEmaSlowPrev
+hSlopeDown = hEmaSlow < hEmaSlowPrev
+
+hVWAP = request.security(syminfo.tickerid, "60", ta.vwap(hlc3))
+
+hourlyBuyValid  = hBullCross and hClose > hVWAP and hSlopeUp
+hourlySellValid = hBearCross and hClose < hVWAP and hSlopeDown
+
+//=====================================================================
+// HOURLY ARM STATE
+//=====================================================================
+var bool hourlyArmedBuy  = false
+var bool hourlyArmedSell = false
+
+hourlyBuyArmEvent         = false
+hourlySellArmEvent        = false
+hourlyBuyInvalidateEvent  = false
+hourlySellInvalidateEvent = false
+
+hourlyBuyArmEvent         := false
+hourlySellArmEvent        := false
+hourlyBuyInvalidateEvent  := false
+hourlySellInvalidateEvent := false
+
+if newHour
+    if dailyInBuy and hourlyBuyValid
+        hourlyArmedBuy := true
+        hourlyArmedSell := false
+        hourlyBuyArmEvent := true
+
+    if dailyInSell and hourlySellValid
+        hourlyArmedSell := true
+        hourlyArmedBuy := false
+        hourlySellArmEvent := true
+
+    if hourlyArmedBuy and hBearCross
+        hourlyArmedBuy := false
+        hourlyBuyInvalidateEvent := true
+
+    if hourlyArmedSell and hBullCross
+        hourlyArmedSell := false
+        hourlySellInvalidateEvent := true
+
+//=====================================================================
+// SESSION VWAP + STDEV BANDS
+//=====================================================================
+newSession = ta.change(time("D")) != 0
+
+tp = hlc3
+var float cumPV  = na
+var float cumV   = na
+var float cumTP2 = na
+
+cumPV  := newSession ? tp * volume      : nz(cumPV[1])  + tp * volume
+cumV   := newSession ? volume           : nz(cumV[1])   + volume
+cumTP2 := newSession ? tp * tp * volume : nz(cumTP2[1]) + tp * tp * volume
+
+vwap = cumPV / cumV
+variance = math.max(cumTP2 / cumV - vwap * vwap, 0)
+stdev = math.sqrt(variance)
+
+upperBand1 = vwap + stdev * band1Mult
+lowerBand1 = vwap - stdev * band1Mult
+upperBand2 = vwap + stdev * band2Mult
+lowerBand2 = vwap - stdev * band2Mult
+
+//=====================================================================
+// NORMAL PULLBACK MEMORY
+//=====================================================================
+var bool pullbackSeenBuy  = false
+var bool pullbackSeenSell = false
+
+buyPullback  = dailyInBuy  and low < lowerBand1 and close > lowerBand1
+sellPullback = dailyInSell and high > upperBand1 and close < upperBand1
+
+if buyPullback
+    pullbackSeenBuy := true
+if sellPullback
+    pullbackSeenSell := true
+
+if not dailyInBuy
+    pullbackSeenBuy := false
+if not dailyInSell
+    pullbackSeenSell := false
+
+//=====================================================================
+// INVALIDATION ZONES (v5.5d)
+//=====================================================================
+// HB X -> buyReverseCarry zone alive (invalid BUY zone; reverse SELL side relevant)
+// HS X -> sellReverseCarry zone alive (invalid SELL zone; reverse BUY side relevant)
+//
+// v5.5d change:
+// - zone does NOT die on SMA cross
+// - SMA acts only as a live gate
+// - zone dies only when hourly re-arms on same side OR daily regime dies
+//=====================================================================
+var bool buyReverseCarry  = false   // HB X zone alive
+var bool sellReverseCarry = false   // HS X zone alive
+
+buyReverseCarryStartEvent  = false
+sellReverseCarryStartEvent = false
+buyReverseCarryEndEvent    = false
+sellReverseCarryEndEvent   = false
+
+buyReverseCarryStartEvent  := false
+sellReverseCarryStartEvent := false
+buyReverseCarryEndEvent    := false
+sellReverseCarryEndEvent   := false
+
+// Start invalidation zones
+if hourlyBuyInvalidateEvent and dailyInBuy
+    buyReverseCarry := true
+    buyReverseCarryStartEvent := true
+
+if hourlySellInvalidateEvent and dailyInSell
+    sellReverseCarry := true
+    sellReverseCarryStartEvent := true
+
+// End invalidation zone ONLY when hourly re-arms again on same side
+if hourlyBuyArmEvent and buyReverseCarry
+    buyReverseCarry := false
+    buyReverseCarryEndEvent := true
+
+if hourlySellArmEvent and sellReverseCarry
+    sellReverseCarry := false
+    sellReverseCarryEndEvent := true
+
+// Kill zone if parent daily regime dies
+if not dailyInBuy and buyReverseCarry
+    buyReverseCarry := false
+    buyReverseCarryEndEvent := true
+
+if not dailyInSell and sellReverseCarry
+    sellReverseCarry := false
+    sellReverseCarryEndEvent := true
+
+// Live SMA gates INSIDE invalidation zone
+reverseSellCarryGate = revSmaFast < revSmaSlow   // HB X zone: invalid reverse SELL allowed only below
+reverseBuyCarryGate  = revSmaFast > revSmaSlow   // HS X zone: invalid reverse BUY allowed only above
+//=====================================================================
+// NORMAL TRADE ENTRY LOGIC
+//=====================================================================
+tradeBuy  = dailyInBuy  and hourlyArmedBuy  and pullbackSeenBuy  and bullCross6
+tradeSell = dailyInSell and hourlyArmedSell and pullbackSeenSell and bearCross6
+
+if tradeBuy
+    pullbackSeenBuy := false
+if tradeSell
+    pullbackSeenSell := false
+
+//=====================================================================
+// REVERSE WATCHES (NORMAL + INVALID)
+//=====================================================================
+var bool reverseSellWatch_normal  = false
+var bool reverseBuyWatch_normal   = false
+var bool reverseSellWatch_invalid = false
+var bool reverseBuyWatch_invalid  = false
+
+// NORMAL side
+if dailyInBuy and hourlyArmedBuy and high >= upperBand2
+    reverseSellWatch_normal := true
+
+if dailyInSell and hourlyArmedSell and low <= lowerBand2
+    reverseBuyWatch_normal := true
+
+// INVALID carry side
+// Zone persists, but watch only arms on fresh band touch while zone is alive.
+if not buyReverseCarry
+    reverseSellWatch_invalid := false
+
+if not sellReverseCarry
+    reverseBuyWatch_invalid := false
+
+if dailyInBuy and buyReverseCarry and high >= upperBand2
+    reverseSellWatch_invalid := true
+
+if dailyInSell and sellReverseCarry and low <= lowerBand2
+    reverseBuyWatch_invalid := true
+
+
+//=====================================================================
+// PIVOT HELPERS FOR DIVERGENCE
+//=====================================================================
+pivLow = ta.pivotlow(low, pivotLeft, pivotRight)
+pivHigh = ta.pivothigh(high, pivotLeft, pivotRight)
+
+pivotLowFound = not na(pivLow)
+pivotHighFound = not na(pivHigh)
+
+pivotLowPrice = pivLow
+pivotHighPrice = pivHigh
+
+pivotLowRsi = rsi[pivotRight]
+pivotHighRsi = rsi[pivotRight]
+
+//=====================================================================
+// STRONGER DIVERGENCE STATE MACHINE (v5.5c)
+//=====================================================================
+
+//---------------------------
+// BUY DIV NORMAL
+//---------------------------
+var bool  buyDivCandidate_normal = false
+var bool  buyDivL1Ready_normal = false
+var bool  buyDivConfirmed_normal = false
+var bool  buyDivReclaimed_normal = false
+var float buyDivL1Price_normal = na
+var float buyDivL1Rsi_normal = na
+
+//---------------------------
+// BUY DIV INVALID
+//---------------------------
+var bool  buyDivCandidate_invalid = false
+var bool  buyDivL1Ready_invalid = false
+var bool  buyDivConfirmed_invalid = false
+var bool  buyDivReclaimed_invalid = false
+var float buyDivL1Price_invalid = na
+var float buyDivL1Rsi_invalid = na
+
+//---------------------------
+// SELL DIV NORMAL
+//---------------------------
+var bool  sellDivCandidate_normal = false
+var bool  sellDivH1Ready_normal = false
+var bool  sellDivConfirmed_normal = false
+var bool  sellDivReclaimed_normal = false
+var float sellDivH1Price_normal = na
+var float sellDivH1Rsi_normal = na
+
+//---------------------------
+// SELL DIV INVALID
+//---------------------------
+var bool  sellDivCandidate_invalid = false
+var bool  sellDivH1Ready_invalid = false
+var bool  sellDivConfirmed_invalid = false
+var bool  sellDivReclaimed_invalid = false
+var float sellDivH1Price_invalid = na
+var float sellDivH1Rsi_invalid = na
+
+//=====================================================================
+// ARM divergence candidates when reverse watch first turns on
+//=====================================================================
+if reverseBuyWatch_normal and not reverseBuyWatch_normal[1]
+    buyDivCandidate_normal := true
+    buyDivL1Ready_normal := false
+    buyDivConfirmed_normal := false
+    buyDivReclaimed_normal := false
+    buyDivL1Price_normal := na
+    buyDivL1Rsi_normal := na
+
+if reverseBuyWatch_invalid and not reverseBuyWatch_invalid[1]
+    buyDivCandidate_invalid := true
+    buyDivL1Ready_invalid := false
+    buyDivConfirmed_invalid := false
+    buyDivReclaimed_invalid := false
+    buyDivL1Price_invalid := na
+    buyDivL1Rsi_invalid := na
+
+if reverseSellWatch_normal and not reverseSellWatch_normal[1]
+    sellDivCandidate_normal := true
+    sellDivH1Ready_normal := false
+    sellDivConfirmed_normal := false
+    sellDivReclaimed_normal := false
+    sellDivH1Price_normal := na
+    sellDivH1Rsi_normal := na
+
+if reverseSellWatch_invalid and not reverseSellWatch_invalid[1]
+    sellDivCandidate_invalid := true
+    sellDivH1Ready_invalid := false
+    sellDivConfirmed_invalid := false
+    sellDivReclaimed_invalid := false
+    sellDivH1Price_invalid := na
+    sellDivH1Rsi_invalid := na
+
+//=====================================================================
+// BUY DIV NORMAL flow
+//=====================================================================
+if buyDivCandidate_normal and pivotLowFound
+    if not buyDivL1Ready_normal
+        if pivotLowRsi <= buyDivRsiMax
+            buyDivL1Price_normal := pivotLowPrice
+            buyDivL1Rsi_normal := pivotLowRsi
+            buyDivL1Ready_normal := true
+    else if not buyDivConfirmed_normal
+        if pivotLowPrice < buyDivL1Price_normal and pivotLowRsi > buyDivL1Rsi_normal
+            buyDivConfirmed_normal := true
+
+if buyDivConfirmed_normal and close > lowerBand2
+    buyDivReclaimed_normal := true
+
+//=====================================================================
+// BUY DIV INVALID flow
+//=====================================================================
+if buyDivCandidate_invalid and pivotLowFound
+    if not buyDivL1Ready_invalid
+        if pivotLowRsi <= buyDivRsiMax
+            buyDivL1Price_invalid := pivotLowPrice
+            buyDivL1Rsi_invalid := pivotLowRsi
+            buyDivL1Ready_invalid := true
+    else if not buyDivConfirmed_invalid
+        if pivotLowPrice < buyDivL1Price_invalid and pivotLowRsi > buyDivL1Rsi_invalid
+            buyDivConfirmed_invalid := true
+
+if buyDivConfirmed_invalid and close > lowerBand2
+    buyDivReclaimed_invalid := true
+
+//=====================================================================
+// SELL DIV NORMAL flow
+//=====================================================================
+if sellDivCandidate_normal and pivotHighFound
+    if not sellDivH1Ready_normal
+        if pivotHighRsi >= sellDivRsiMin
+            sellDivH1Price_normal := pivotHighPrice
+            sellDivH1Rsi_normal := pivotHighRsi
+            sellDivH1Ready_normal := true
+    else if not sellDivConfirmed_normal
+        if pivotHighPrice > sellDivH1Price_normal and pivotHighRsi < sellDivH1Rsi_normal
+            sellDivConfirmed_normal := true
+
+if sellDivConfirmed_normal and close < upperBand2
+    sellDivReclaimed_normal := true
+
+//=====================================================================
+// SELL DIV INVALID flow
+//=====================================================================
+if sellDivCandidate_invalid and pivotHighFound
+    if not sellDivH1Ready_invalid
+        if pivotHighRsi >= sellDivRsiMin
+            sellDivH1Price_invalid := pivotHighPrice
+            sellDivH1Rsi_invalid := pivotHighRsi
+            sellDivH1Ready_invalid := true
+    else if not sellDivConfirmed_invalid
+        if pivotHighPrice > sellDivH1Price_invalid and pivotHighRsi < sellDivH1Rsi_invalid
+            sellDivConfirmed_invalid := true
+
+if sellDivConfirmed_invalid and close < upperBand2
+    sellDivReclaimed_invalid := true
+
+//=====================================================================
+// REVERSE TRIGGERS
+//=====================================================================
+
+// Normal reverse triggers
+reverseSell_normal_raw  = dailyInBuy  and hourlyArmedBuy  and reverseSellWatch_normal  and bearCross6
+reverseBuy_normal_raw   = dailyInSell and hourlyArmedSell and reverseBuyWatch_normal   and bullCross6
+//reverseSell_invalid_raw = dailyInBuy  and buyReverseCarry and reverseSellWatch_invalid and bearCross6
+//reverseBuy_invalid_raw  = dailyInSell and sellReverseCarry and reverseBuyWatch_invalid and bullCross6
+
+reverseSell_invalid_raw =
+ dailyInBuy and
+ buyReverseCarry and
+ reverseSellCarryGate and
+ reverseSellWatch_invalid and
+ bearCross6
+
+reverseBuy_invalid_raw =
+ dailyInSell and
+ sellReverseCarry and
+ reverseBuyCarryGate and
+ reverseBuyWatch_invalid and
+ bullCross6
+
+
+// Strong DIV triggers with MACD confirmation (v5.5c)
+reverseBuyDiv_normal =
+     dailyInSell and
+     hourlyArmedSell and
+     reverseBuyWatch_normal and
+     buyDivConfirmed_normal and
+     buyDivReclaimed_normal and
+     bullCross6 and
+     macdBuyConfirm
+
+reverseBuyDiv_invalid =
+ dailyInSell and
+ sellReverseCarry and
+ reverseBuyCarryGate and
+ reverseBuyWatch_invalid and
+ buyDivConfirmed_invalid and
+ buyDivReclaimed_invalid and
+ bullCross6 and
+ macdBuyConfirm
+
+reverseSellDiv_normal =
+     dailyInBuy and
+     hourlyArmedBuy and
+     reverseSellWatch_normal and
+     sellDivConfirmed_normal and
+     sellDivReclaimed_normal and
+     bearCross6 and
+     macdSellConfirm
+
+reverseSellDiv_invalid =
+ dailyInBuy and
+ buyReverseCarry and
+ reverseSellCarryGate and
+ reverseSellWatch_invalid and
+ sellDivConfirmed_invalid and
+ sellDivReclaimed_invalid and
+ bearCross6 and
+ macdSellConfirm
+
+reverseBuyDiv  = reverseBuyDiv_normal or reverseBuyDiv_invalid
+reverseSellDiv = reverseSellDiv_normal or reverseSellDiv_invalid
+
+// Priority rule
+reverseBuy_normal_final = (reverseBuy_normal_raw or reverseBuy_invalid_raw) and not reverseBuyDiv
+
+reverseSell_normal_final = (reverseSell_normal_raw or reverseSell_invalid_raw) and not reverseSellDiv
+
+//=====================================================================
+// CLEANUP AFTER REVERSE FIRES
+//=====================================================================
+if reverseBuy_normal_raw
+    reverseBuyWatch_normal := false
+    buyDivCandidate_normal := false
+    buyDivL1Ready_normal := false
+    buyDivConfirmed_normal := false
+    buyDivReclaimed_normal := false
+    buyDivL1Price_normal := na
+    buyDivL1Rsi_normal := na
+
+if reverseBuy_invalid_raw
+    reverseBuyWatch_invalid := false
+    buyDivCandidate_invalid := false
+    buyDivL1Ready_invalid := false
+    buyDivConfirmed_invalid := false
+    buyDivReclaimed_invalid := false
+    buyDivL1Price_invalid := na
+    buyDivL1Rsi_invalid := na
+  
+
+if reverseBuyDiv_normal
+    reverseBuyWatch_normal := false
+    buyDivCandidate_normal := false
+    buyDivL1Ready_normal := false
+    buyDivConfirmed_normal := false
+    buyDivReclaimed_normal := false
+    buyDivL1Price_normal := na
+    buyDivL1Rsi_normal := na
+
+if reverseBuyDiv_invalid
+    reverseBuyWatch_invalid := false
+    buyDivCandidate_invalid := false
+    buyDivL1Ready_invalid := false
+    buyDivConfirmed_invalid := false
+    buyDivReclaimed_invalid := false
+    buyDivL1Price_invalid := na
+    buyDivL1Rsi_invalid := na
+   
+if reverseSell_normal_raw
+    reverseSellWatch_normal := false
+    sellDivCandidate_normal := false
+    sellDivH1Ready_normal := false
+    sellDivConfirmed_normal := false
+    sellDivReclaimed_normal := false
+    sellDivH1Price_normal := na
+    sellDivH1Rsi_normal := na
+
+if reverseSell_invalid_raw
+    reverseSellWatch_invalid := false
+    sellDivCandidate_invalid := false
+    sellDivH1Ready_invalid := false
+    sellDivConfirmed_invalid := false
+    sellDivReclaimed_invalid := false
+    sellDivH1Price_invalid := na
+    sellDivH1Rsi_invalid := na
+
+
+if reverseSellDiv_normal
+    reverseSellWatch_normal := false
+    sellDivCandidate_normal := false
+    sellDivH1Ready_normal := false
+    sellDivConfirmed_normal := false
+    sellDivReclaimed_normal := false
+    sellDivH1Price_normal := na
+    sellDivH1Rsi_normal := na
+
+if reverseSellDiv_invalid
+    reverseSellWatch_invalid := false
+    sellDivCandidate_invalid := false
+    sellDivH1Ready_invalid := false
+    sellDivConfirmed_invalid := false
+    sellDivReclaimed_invalid := false
+    sellDivH1Price_invalid := na
+    sellDivH1Rsi_invalid := na
+  
+
+//=====================================================================
+// EXIT LOGIC
+//=====================================================================
+failureExitLong  = dailyInBuy  and (hourlyArmedBuy or buyReverseCarry)   and bearCross6 and close < vwap
+failureExitShort = dailyInSell and (hourlyArmedSell or sellReverseCarry) and bullCross6 and close > vwap
+
+hourlyExitLong  = dailyInBuy  and newHour and hBearCross and not buyReverseCarry
+hourlyExitShort = dailyInSell and newHour and hBullCross and not sellReverseCarry
+
+dailyExitLong   = dailyBuyCancelEvent
+dailyExitShort  = dailySellCancelEvent
+
+if hourlyExitLong or dailyExitLong
+    hourlyArmedBuy := false
+    buyReverseCarry := false
+
+    reverseSellWatch_normal := false
+    reverseSellWatch_invalid := false
+    sellDivCandidate_normal := false
+    sellDivCandidate_invalid := false
+    sellDivH1Ready_normal := false
+    sellDivH1Ready_invalid := false
+    sellDivConfirmed_normal := false
+    sellDivConfirmed_invalid := false
+    sellDivReclaimed_normal := false
+    sellDivReclaimed_invalid := false
+    sellDivH1Price_normal := na
+    sellDivH1Rsi_normal := na
+    sellDivH1Price_invalid := na
+    sellDivH1Rsi_invalid := na
+
+if hourlyExitShort or dailyExitShort
+    hourlyArmedSell := false
+    sellReverseCarry := false
+
+    reverseBuyWatch_normal := false
+    reverseBuyWatch_invalid := false
+    buyDivCandidate_normal := false
+    buyDivCandidate_invalid := false
+    buyDivL1Ready_normal := false
+    buyDivL1Ready_invalid := false
+    buyDivConfirmed_normal := false
+    buyDivConfirmed_invalid := false
+    buyDivReclaimed_normal := false
+    buyDivReclaimed_invalid := false
+    buyDivL1Price_normal := na
+    buyDivL1Rsi_normal := na
+    buyDivL1Price_invalid := na
+    buyDivL1Rsi_invalid := na
+
+//=====================================================================
+// LABELS
+//=====================================================================
+f_label(dailyStrongBuyEvent,  high, "D BUY+",  label.style_label_down, color.new(color.green, 0), color.white)
+f_label(dailyContBuyEvent,    high, "D BUY~",  label.style_label_down, color.new(color.green, 35), color.white)
+f_label(dailyStrongSellEvent, low,  "D SELL+", label.style_label_up,   color.new(color.red, 0), color.white)
+f_label(dailyContSellEvent,   low,  "D SELL~", label.style_label_up,   color.new(color.red, 35), color.white)
+
+f_label(dailyBuyCancelEvent or dailySellCancelEvent, close, "D CANCEL", label.style_label_left, color.new(color.orange, 0), color.white)
+
+f_label(hourlyBuyArmEvent,         low,  "HB",   label.style_label_up,   color.new(color.lime, 0), color.black)
+f_label(hourlySellArmEvent,        high, "HS",   label.style_label_down, color.new(color.maroon, 0), color.white)
+f_label(hourlyBuyInvalidateEvent,  high, "HB X", label.style_label_down, color.new(color.orange, 0), color.white)
+f_label(hourlySellInvalidateEvent, low,  "HS X", label.style_label_up,   color.new(color.orange, 0), color.white)
+
+f_label(tradeBuy,  low,  "TRADE BUY",  label.style_label_up,   color.new(color.green, 0), color.white)
+f_label(tradeSell, high, "TRADE SELL", label.style_label_down, color.new(color.red, 0), color.white)
+
+// Normal reverse labels preserved
+f_label(reverseSell_normal_final, high, "REVERSE SELL", label.style_label_down, color.new(color.orange, 0), color.white)
+f_label(reverseBuy_normal_final,  low,  "REVERSE BUY",  label.style_label_up,   color.new(color.aqua, 0), color.black)
+
+// Strong divergence labels
+f_label(reverseSellDiv, high, "REV SELL DIV", label.style_label_down, color.new(color.purple, 0), color.white)
+f_label(reverseBuyDiv,  low,  "REV BUY DIV",  label.style_label_up,   color.new(color.blue, 0), color.white)
+
+//f_label(failureExitLong,  high, "FAIL EXIT", label.style_label_down, color.new(color.yellow, 0), color.black)
+//f_label(failureExitShort, low,  "FAIL EXIT", label.style_label_up,   color.new(color.yellow, 0), color.black)
+
+f_label(hourlyExitLong or dailyExitLong,   high, "EXIT", label.style_label_down, color.new(color.yellow, 30), color.black)
+f_label(hourlyExitShort or dailyExitShort, low,  "EXIT", label.style_label_up,   color.new(color.yellow, 30), color.black)
+
+f_label(showReverseCarryLabels and buyReverseCarryStartEvent,  high, "REV SELL ARM", label.style_label_down, color.new(color.orange, 55), color.white)
+f_label(showReverseCarryLabels and sellReverseCarryStartEvent, low,  "REV BUY ARM",  label.style_label_up,   color.new(color.aqua, 55), color.black)
+
+f_label(showReverseCarryLabels and buyReverseCarryEndEvent,  high, "REV SELL OFF", label.style_label_down, color.new(color.gray, 30), color.white)
+f_label(showReverseCarryLabels and sellReverseCarryEndEvent, low,  "REV BUY OFF",  label.style_label_up,   color.new(color.gray, 30), color.black)
+
+//=====================================================================
+// PLOTS
+//=====================================================================
+plot(showDailyCloud ? dCloudUpper : na, title="Daily Cloud Upper", color=color.orange, linewidth=2)
+plot(showDailyCloud ? dCloudLower : na, title="Daily Cloud Lower", color=color.blue, linewidth=2)
+plot(showDailyCloud ? dCloudMid   : na, title="Daily Cloud Mid",   color=color.gray, linewidth=1)
+plot(showDailyCloud ? dKijun      : na, title="Daily Kijun",       color=color.teal, linewidth=1)
+
+plot(emaFast, title="EMA 9", color=color.new(color.green, 0))
+plot(emaSlow, title="EMA 20", color=color.new(color.red, 0))
+
+plot(showVWAPBands ? vwap       : na, title="VWAP",         color=color.purple, linewidth=2)
+plot(showVWAPBands ? upperBand1 : na, title="Upper Band 1", color=color.fuchsia)
+plot(showVWAPBands ? lowerBand1 : na, title="Lower Band 1", color=color.fuchsia)
+plot(showVWAPBands ? upperBand2 : na, title="Upper Band 2", color=color.orange)
+plot(showVWAPBands ? lowerBand2 : na, title="Lower Band 2", color=color.orange)
+
+plot(revSmaFast, title="Reverse SMA 21", color=color.new(color.yellow, 0))
+plot(revSmaSlow, title="Reverse SMA 200", color=color.new(color.gray, 0))

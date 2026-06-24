@@ -15,4 +15,5 @@ GeeatWave 5.7
 Minor Improvement in Reverse Logic.
 
 Great Wave 5.5c
+
 Allows  more contra trade. Price Divergence Added.

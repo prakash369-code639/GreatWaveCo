@@ -10,10 +10,11 @@ GreatWave 5.5
 
 It allows one contra trade when hourly invalidates. Also script converted to indicator.
 
-GeeatWave 5.7
-
-Minor Improvement in Reverse Logic.
-
 Great Wave 5.5c
 
 Allows  more contra trade. Price Divergence Added.
+
+
+GeeatWave 5.6
+
+Added inversion logic.

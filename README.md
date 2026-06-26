@@ -20,4 +20,5 @@ GreatWave 5.6
 Added inversion logic.
 
 GreatWave 5.7
+
 An elementary double top/double buttom added.

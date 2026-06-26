@@ -15,6 +15,9 @@ Great Wave 5.5c
 Allows  more contra trade. Price Divergence Added.
 
 
-GeeatWave 5.6
+GreatWave 5.6
 
 Added inversion logic.
+
+GreatWave 5.7
+An elementary double top/double buttom added.
